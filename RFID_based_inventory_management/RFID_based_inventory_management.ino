@@ -1,5 +1,6 @@
 #include <SPI.h>
 #include <MFRC522.h>
+#include <WiFi.h>  // Include Wi-Fi library
 
 #define RST_PIN         5         // Reset pin for RFID
 #define SS_PIN_1        15        // Slave Select pin for Reader 1
@@ -19,14 +20,31 @@ String expectedTag2 = "TagID2";
 String expectedTag3 = "TagID3";
 String expectedTag4 = "TagID4";
 
+// Wi-Fi credentials
+const char* ssid = "YOUR_SSID";         // Replace with your Wi-Fi SSID
+const char* password = "YOUR_PASSWORD";  // Replace with your Wi-Fi Password
+
 // Variables to track time for 5-second interval
 unsigned long lastReadTime = 0;  // Store the last time tags were read
 const unsigned long readInterval = 5000;  // Interval in milliseconds (5 seconds)
 
 void setup() {
   Serial.begin(115200);
-  SPI.begin();                       // Initialize SPI bus
-  rfid1.PCD_Init();                  // Initialize each RFID reader
+  
+  // Initialize Wi-Fi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to Wi-Fi...");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected to Wi-Fi");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  // Initialize SPI and RFID readers
+  SPI.begin();
+  rfid1.PCD_Init();
   rfid2.PCD_Init();
   rfid3.PCD_Init();
   rfid4.PCD_Init();
