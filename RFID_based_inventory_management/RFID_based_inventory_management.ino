@@ -52,7 +52,7 @@ void loop() {
     }
   }
 
-  // RFID Intake Reader
+  // RFID Intake Reader - Scans only once
   if (intakeMode && mfrc522Intake.PICC_IsNewCardPresent() && mfrc522Intake.PICC_ReadCardSerial()) {
     Serial.print("Intake RFID Tag: ");
     for (byte i = 0; i < mfrc522Intake.uid.size; i++) {
@@ -61,9 +61,11 @@ void loop() {
     }
     Serial.println();
     mfrc522Intake.PICC_HaltA();
+    intakeMode = false;  // Deactivate intake mode after a successful scan
+    Serial.println("Intake mode deactivated.");
   }
 
-  // RFID Takeout Reader
+  // RFID Takeout Reader - Scans only once
   if (takeoutMode && mfrc522Takeout.PICC_IsNewCardPresent() && mfrc522Takeout.PICC_ReadCardSerial()) {
     Serial.print("Takeout RFID Tag: ");
     for (byte i = 0; i < mfrc522Takeout.uid.size; i++) {
@@ -72,5 +74,7 @@ void loop() {
     }
     Serial.println();
     mfrc522Takeout.PICC_HaltA();
+    takeoutMode = false;  // Deactivate takeout mode after a successful scan
+    Serial.println("Takeout mode deactivated.");
   }
 }
