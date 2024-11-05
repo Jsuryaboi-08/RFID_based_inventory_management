@@ -1,90 +1,101 @@
 #include <SPI.h>
 #include <MFRC522.h>
-#include <WiFi.h>  // Include Wi-Fi library
+#include <WiFi.h>
 
-#define RST_PIN         5         // Reset pin for RFID
-#define SS_PIN_1        15        // Slave Select pin for Reader 1
-#define SS_PIN_2        2         // Slave Select pin for Reader 2
-#define SS_PIN_3        4         // Slave Select pin for Reader 3
-#define SS_PIN_4        16        // Slave Select pin for Reader 4
+#define RST_PIN1 22 // Reset pin for first RFID reader
+#define SS_PIN1 21  // SDA pin for first RFID reader
+#define RST_PIN2 19 // Reset pin for second RFID reader
+#define SS_PIN2 18  // SDA pin for second RFID reader
 
-// Define RFID readers
-MFRC522 rfid1(SS_PIN_1, RST_PIN);
-MFRC522 rfid2(SS_PIN_2, RST_PIN);
-MFRC522 rfid3(SS_PIN_3, RST_PIN);
-MFRC522 rfid4(SS_PIN_4, RST_PIN);
-
-// Expected tag IDs for each reader (replace with your actual tag IDs)
-String expectedTag1 = "TagID1";
-String expectedTag2 = "TagID2";
-String expectedTag3 = "TagID3";
-String expectedTag4 = "TagID4";
+MFRC522 mfrc522Intake(SS_PIN1, RST_PIN1);  // Create MFRC522 instance for intake
+MFRC522 mfrc522Takeout(SS_PIN2, RST_PIN2); // Create MFRC522 instance for takeout
 
 // Wi-Fi credentials
-const char* ssid = "YOUR_SSID";         // Replace with your Wi-Fi SSID
-const char* password = "YOUR_PASSWORD";  // Replace with your Wi-Fi Password
+const char* ssid = "your_SSID";
+const char* password = "your_PASSWORD";
 
-// Variables to track time for 5-second interval
-unsigned long lastReadTime = 0;  // Store the last time tags were read
-const unsigned long readInterval = 5000;  // Interval in milliseconds (5 seconds)
+// Flags to activate/deactivate RFID readers
+bool intakeMode = false;
+bool takeoutMode = false;
+
+// Array to store allowed UIDs (4 unique items)
+byte allowedUIDs[4][4] = {
+  {0xDE, 0xAD, 0xBE, 0xEF},
+  {0x12, 0x34, 0x56, 0x78},
+  {0x90, 0xAB, 0xCD, 0xEF},
+  {0xFE, 0xDC, 0xBA, 0x98}
+};
+
+// Track scanned items
+bool scannedItems[4] = {false, false, false, false};
 
 void setup() {
   Serial.begin(115200);
-  
-  // Initialize Wi-Fi
+  SPI.begin();  
+  mfrc522Intake.PCD_Init();
+  mfrc522Takeout.PCD_Init();
+
+  // Connect to WiFi
   WiFi.begin(ssid, password);
-  Serial.print("Connecting to Wi-Fi...");
+  Serial.print("Connecting to WiFi...");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nConnected to Wi-Fi");
-  Serial.print("IP Address: ");
-  Serial.println(WiFi.localIP());
-
-  // Initialize SPI and RFID readers
-  SPI.begin();
-  rfid1.PCD_Init();
-  rfid2.PCD_Init();
-  rfid3.PCD_Init();
-  rfid4.PCD_Init();
-  Serial.println("RFID Inventory System Initialized");
+  Serial.println("\nConnected to WiFi!");
 }
 
 void loop() {
-  // Check if 5 seconds have passed since the last read
-  if (millis() - lastReadTime >= readInterval) {
-    // Update the last read time
-    lastReadTime = millis();
+  // Check for serial input
+  if (Serial.available() > 0) {
+    String command = Serial.readStringUntil('\n');
+    command.trim();
 
-    // Read each RFID reader
-    checkReader(rfid1, expectedTag1, "Reader 1");
-    checkReader(rfid2, expectedTag2, "Reader 2");
-    checkReader(rfid3, expectedTag3, "Reader 3");
-    checkReader(rfid4, expectedTag4, "Reader 4");
+    if (command == "intake") {
+      intakeMode = true;
+      takeoutMode = false;
+      Serial.println("Intake mode activated.");
+    } 
+    else if (command == "takeout") {
+      intakeMode = false;
+      takeoutMode = true;
+      Serial.println("Takeout mode activated.");
+    }
+  }
+
+  // RFID Intake Reader - Scans only specified items
+  if (intakeMode) {
+    scanRFID(mfrc522Intake, "Intake");
+  }
+
+  // RFID Takeout Reader - Scans only specified items
+  if (takeoutMode) {
+    scanRFID(mfrc522Takeout, "Takeout");
   }
 }
 
-// Function to check a single reader
-void checkReader(MFRC522 &rfid, String expectedTag, String readerName) {
-  if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) {
-    Serial.println(readerName + ": No tag present");
-    return;  // No tag present, skip further checking
+// Function to scan RFID tags and check against allowed UIDs
+void scanRFID(MFRC522& reader, String mode) {
+  if (reader.PICC_IsNewCardPresent() && reader.PICC_ReadCardSerial()) {
+    for (int i = 0; i < 4; i++) {
+      bool match = true;
+      for (int j = 0; j < 4; j++) {
+        if (reader.uid.uidByte[j] != allowedUIDs[i][j]) {
+          match = false;
+          break;
+        }
+      }
+      if (match && !scannedItems[i]) {
+        Serial.print(mode + " RFID Tag Detected: ");
+        for (byte j = 0; j < reader.uid.size; j++) {
+          Serial.print(reader.uid.uidByte[j] < 0x10 ? " 0" : " ");
+          Serial.print(reader.uid.uidByte[j], HEX);
+        }
+        Serial.println();
+        scannedItems[i] = true;  // Mark item as scanned
+        break;
+      }
+    }
+    reader.PICC_HaltA();
   }
-
-  String currentTag = "";
-  for (byte i = 0; i < rfid.uid.size; i++) {
-    currentTag += String(rfid.uid.uidByte[i], HEX);
-  }
-  currentTag.toUpperCase();
-
-  // Check if the current tag matches the expected tag
-  if (currentTag == expectedTag) {
-    Serial.println(readerName + ": Correct tag present");
-  } else {
-    Serial.println(readerName + ": Incorrect tag detected! Object misplaced");
-  }
-
-  rfid.PICC_HaltA();  // Halt PICC
-  rfid.PCD_StopCrypto1();  // Stop encryption on PCD
 }
