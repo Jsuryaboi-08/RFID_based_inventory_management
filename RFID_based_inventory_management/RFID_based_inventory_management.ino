@@ -13,9 +13,11 @@ MFRC522 mfrc522(SS_PIN, RST_PIN);  // Create MFRC522 instance
 const char* ssid = "your_SSID";
 const char* password = "your_PASSWORD";
 
-// Button states
+// Button states and timing
 bool intakeMode = false;
 bool takeoutMode = false;
+unsigned long scanStartTime = 0;
+const unsigned long scanDuration = 2000;  // Scanning time window (2 seconds)
 
 void setup() {
   Serial.begin(115200);
@@ -37,30 +39,33 @@ void setup() {
 }
 
 void loop() {
-  // Check if intake button is pressed
-  if (digitalRead(INTAKE_BUTTON_PIN) == LOW) {
+  // Check intake button press
+  if (digitalRead(INTAKE_BUTTON_PIN) == LOW && !intakeMode && !takeoutMode) {
     intakeMode = true;
-    takeoutMode = false;
-    Serial.println("Intake mode activated.");
+    scanStartTime = millis();
+    Serial.println("Intake mode activated for 2 seconds.");
     delay(300); // Debounce delay
   }
 
-  // Check if takeout button is pressed
-  if (digitalRead(TAKEOUT_BUTTON_PIN) == LOW) {
-    intakeMode = false;
+  // Check takeout button press
+  if (digitalRead(TAKEOUT_BUTTON_PIN) == LOW && !intakeMode && !takeoutMode) {
     takeoutMode = true;
-    Serial.println("Takeout mode activated.");
+    scanStartTime = millis();
+    Serial.println("Takeout mode activated for 2 seconds.");
     delay(300); // Debounce delay
   }
 
-  // RFID Reader in Intake Mode
-  if (intakeMode) {
-    scanRFID("Intake");
-  }
-
-  // RFID Reader in Takeout Mode
-  if (takeoutMode) {
-    scanRFID("Takeout");
+  // Check scan timeout (2 seconds)
+  if (intakeMode || takeoutMode) {
+    if (millis() - scanStartTime < scanDuration) {
+      // RFID Reader active during 2-second window
+      scanRFID(intakeMode ? "Intake" : "Takeout");
+    } else {
+      // End scanning mode after 2 seconds
+      intakeMode = false;
+      takeoutMode = false;
+      Serial.println("Scan window closed.");
+    }
   }
 }
 
@@ -75,5 +80,10 @@ void scanRFID(String mode) {
     Serial.println();
     
     mfrc522.PICC_HaltA();
+
+    // Exit the scan mode after a successful read
+    intakeMode = false;
+    takeoutMode = false;
+    Serial.println("Scan complete, mode deactivated.");
   }
 }
