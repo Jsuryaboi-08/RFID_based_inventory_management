@@ -2,40 +2,27 @@
 #include <MFRC522.h>
 #include <WiFi.h>
 
-#define RST_PIN1 22 // Reset pin for first RFID reader
-#define SS_PIN1 21  // SDA pin for first RFID reader
-#define RST_PIN2 19 // Reset pin for second RFID reader
-#define SS_PIN2 18  // SDA pin for second RFID reader
+#define RST_PIN 22    // Reset pin for the RFID reader
+#define SS_PIN 21     // SDA pin for the RFID reader
+#define INTAKE_BUTTON_PIN 4   // Pin for intake button
+#define TAKEOUT_BUTTON_PIN 5  // Pin for takeout button
 
-MFRC522 mfrc522Intake(SS_PIN1, RST_PIN1);  // Create MFRC522 instance for intake
-MFRC522 mfrc522Takeout(SS_PIN2, RST_PIN2); // Create MFRC522 instance for takeout
+MFRC522 mfrc522(SS_PIN, RST_PIN);  // Create MFRC522 instance
 
 // Wi-Fi credentials
 const char* ssid = "your_SSID";
 const char* password = "your_PASSWORD";
 
-// Flags to activate/deactivate RFID readers
+// Button states
 bool intakeMode = false;
 bool takeoutMode = false;
-
-// Array to store allowed UIDs (4 unique items)
-byte allowedUIDs[4][4] = {
-  {0xDE, 0xAD, 0xBE, 0xEF},
-  {0x12, 0x34, 0x56, 0x78},
-  {0x90, 0xAB, 0xCD, 0xEF},
-  {0xFE, 0xDC, 0xBA, 0x98}
-};
-
-// Track scanned items
-bool scannedItems[4] = {false, false, false, false};
 
 void setup() {
   Serial.begin(115200);
   SPI.begin();  
-  mfrc522Intake.PCD_Init();
-  mfrc522Takeout.PCD_Init();
+  mfrc522.PCD_Init();
 
-  // Connect to WiFi
+  // Set up Wi-Fi
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi...");
   while (WiFi.status() != WL_CONNECTED) {
@@ -43,59 +30,50 @@ void setup() {
     Serial.print(".");
   }
   Serial.println("\nConnected to WiFi!");
+
+  // Initialize buttons
+  pinMode(INTAKE_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(TAKEOUT_BUTTON_PIN, INPUT_PULLUP);
 }
 
 void loop() {
-  // Check for serial input
-  if (Serial.available() > 0) {
-    String command = Serial.readStringUntil('\n');
-    command.trim();
-
-    if (command == "intake") {
-      intakeMode = true;
-      takeoutMode = false;
-      Serial.println("Intake mode activated.");
-    } 
-    else if (command == "takeout") {
-      intakeMode = false;
-      takeoutMode = true;
-      Serial.println("Takeout mode activated.");
-    }
+  // Check if intake button is pressed
+  if (digitalRead(INTAKE_BUTTON_PIN) == LOW) {
+    intakeMode = true;
+    takeoutMode = false;
+    Serial.println("Intake mode activated.");
+    delay(300); // Debounce delay
   }
 
-  // RFID Intake Reader - Scans only specified items
+  // Check if takeout button is pressed
+  if (digitalRead(TAKEOUT_BUTTON_PIN) == LOW) {
+    intakeMode = false;
+    takeoutMode = true;
+    Serial.println("Takeout mode activated.");
+    delay(300); // Debounce delay
+  }
+
+  // RFID Reader in Intake Mode
   if (intakeMode) {
-    scanRFID(mfrc522Intake, "Intake");
+    scanRFID("Intake");
   }
 
-  // RFID Takeout Reader - Scans only specified items
+  // RFID Reader in Takeout Mode
   if (takeoutMode) {
-    scanRFID(mfrc522Takeout, "Takeout");
+    scanRFID("Takeout");
   }
 }
 
-// Function to scan RFID tags and check against allowed UIDs
-void scanRFID(MFRC522& reader, String mode) {
-  if (reader.PICC_IsNewCardPresent() && reader.PICC_ReadCardSerial()) {
-    for (int i = 0; i < 4; i++) {
-      bool match = true;
-      for (int j = 0; j < 4; j++) {
-        if (reader.uid.uidByte[j] != allowedUIDs[i][j]) {
-          match = false;
-          break;
-        }
-      }
-      if (match && !scannedItems[i]) {
-        Serial.print(mode + " RFID Tag Detected: ");
-        for (byte j = 0; j < reader.uid.size; j++) {
-          Serial.print(reader.uid.uidByte[j] < 0x10 ? " 0" : " ");
-          Serial.print(reader.uid.uidByte[j], HEX);
-        }
-        Serial.println();
-        scannedItems[i] = true;  // Mark item as scanned
-        break;
-      }
+// Function to scan any RFID tag and log it
+void scanRFID(String mode) {
+  if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+    Serial.print(mode + " RFID Tag Detected: ");
+    for (byte i = 0; i < mfrc522.uid.size; i++) {
+      Serial.print(mfrc522.uid.uidByte[i] < 0x10 ? " 0" : " ");
+      Serial.print(mfrc522.uid.uidByte[i], HEX);
     }
-    reader.PICC_HaltA();
+    Serial.println();
+    
+    mfrc522.PICC_HaltA();
   }
 }
