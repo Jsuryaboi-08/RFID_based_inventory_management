@@ -77,4 +77,5 @@ void loop() {
     takeoutMode = false;  // Deactivate takeout mode after a successful scan
     Serial.println("Takeout mode deactivated.");
   }
+  
 }
