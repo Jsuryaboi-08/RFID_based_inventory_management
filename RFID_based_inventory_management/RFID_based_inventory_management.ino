@@ -2,80 +2,89 @@
 #include <MFRC522.h>
 #include <WiFi.h>
 
-#define RST_PIN1 22 // Reset pin for first RFID reader
-#define SS_PIN1 21  // SDA pin for first RFID reader
-#define RST_PIN2 19 // Reset pin for second RFID reader
-#define SS_PIN2 18  // SDA pin for second RFID reader
+#define RST_PIN 22    // Reset pin for the RFID reader
+#define SS_PIN 21     // SDA pin for the RFID reader
+#define INTAKE_BUTTON_PIN 4   // Pin for intake button
+#define TAKEOUT_BUTTON_PIN 5  // Pin for takeout button
 
-MFRC522 mfrc522Intake(SS_PIN1, RST_PIN1);  // Create MFRC522 instance for intake
-MFRC522 mfrc522Takeout(SS_PIN2, RST_PIN2); // Create MFRC522 instance for takeout
+MFRC522 mfrc522(SS_PIN, RST_PIN);  // Create MFRC522 instance
 
 // Wi-Fi credentials
 const char* ssid = "your_SSID";
 const char* password = "your_PASSWORD";
 
-// Flags to activate/deactivate RFID readers
+// Button states and timing
 bool intakeMode = false;
 bool takeoutMode = false;
+unsigned long scanStartTime = 0;
+const unsigned long scanDuration = 2000;  // Scanning time window (2 seconds)
 
 void setup() {
   Serial.begin(115200);
   SPI.begin();  
-  mfrc522Intake.PCD_Init();
-  mfrc522Takeout.PCD_Init();
+  mfrc522.PCD_Init();
 
-  // Connect to WiFi
+  // Set up Wi-Fi
   WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi...");
   Serial.print("Connecting to WiFi...");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
   Serial.println("\nConnected to WiFi!");
+
+  // Initialize buttons
+  pinMode(INTAKE_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(TAKEOUT_BUTTON_PIN, INPUT_PULLUP);
 }
 
 void loop() {
-  // Check for serial input
-  if (Serial.available() > 0) {
-    String command = Serial.readStringUntil('\n');
-    command.trim();
+  // Check intake button press
+  if (digitalRead(INTAKE_BUTTON_PIN) == LOW && !intakeMode && !takeoutMode) {
+    intakeMode = true;
+    scanStartTime = millis();
+    Serial.println("Intake mode activated for 2 seconds.");
+    delay(300); // Debounce delay
+  }
 
-    if (command == "intake") {
-      intakeMode = true;
-      takeoutMode = false;
-      Serial.println("Intake mode activated.");
-    } 
-    else if (command == "takeout") {
+  // Check takeout button press
+  if (digitalRead(TAKEOUT_BUTTON_PIN) == LOW && !intakeMode && !takeoutMode) {
+    takeoutMode = true;
+    scanStartTime = millis();
+    Serial.println("Takeout mode activated for 2 seconds.");
+    delay(300); // Debounce delay
+  }
+
+  // Check scan timeout (2 seconds)
+  if (intakeMode || takeoutMode) {
+    if (millis() - scanStartTime < scanDuration) {
+      // RFID Reader active during 2-second window
+      scanRFID(intakeMode ? "Intake" : "Takeout");
+    } else {
+      // End scanning mode after 2 seconds
       intakeMode = false;
-      takeoutMode = true;
-      Serial.println("Takeout mode activated.");
+      takeoutMode = false;
+      Serial.println("Scan window closed.");
     }
   }
+}
 
-  // RFID Intake Reader - Scans only once
-  if (intakeMode && mfrc522Intake.PICC_IsNewCardPresent() && mfrc522Intake.PICC_ReadCardSerial()) {
-    Serial.print("Intake RFID Tag: ");
-    for (byte i = 0; i < mfrc522Intake.uid.size; i++) {
-      Serial.print(mfrc522Intake.uid.uidByte[i] < 0x10 ? " 0" : " ");
-      Serial.print(mfrc522Intake.uid.uidByte[i], HEX);
+// Function to scan any RFID tag and log it
+void scanRFID(String mode) {
+  if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+    Serial.print(mode + " RFID Tag Detected: ");
+    for (byte i = 0; i < mfrc522.uid.size; i++) {
+      Serial.print(mfrc522.uid.uidByte[i] < 0x10 ? " 0" : " ");
+      Serial.print(mfrc522.uid.uidByte[i], HEX);
     }
     Serial.println();
-    mfrc522Intake.PICC_HaltA();
-    intakeMode = false;  // Deactivate intake mode after a successful scan
-    Serial.println("Intake mode deactivated.");
-  }
+    
+    mfrc522.PICC_HaltA();
 
-  // RFID Takeout Reader - Scans only once
-  if (takeoutMode && mfrc522Takeout.PICC_IsNewCardPresent() && mfrc522Takeout.PICC_ReadCardSerial()) {
-    Serial.print("Takeout RFID Tag: ");
-    for (byte i = 0; i < mfrc522Takeout.uid.size; i++) {
-      Serial.print(mfrc522Takeout.uid.uidByte[i] < 0x10 ? " 0" : " ");
-      Serial.print(mfrc522Takeout.uid.uidByte[i], HEX);
-    }
-    Serial.println();
-    mfrc522Takeout.PICC_HaltA();
-    takeoutMode = false;  // Deactivate takeout mode after a successful scan
-    Serial.println("Takeout mode deactivated.");
+    // Exit the scan mode after a successful read
+    intakeMode = false;
+    takeoutMode = false;
+    Serial.println("Scan complete, mode deactivated.");
   }
-  
 }
