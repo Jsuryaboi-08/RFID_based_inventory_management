@@ -1,3 +1,4 @@
+
 #include <SPI.h>
 #include <MFRC522.h>
 #include <WiFi.h>
@@ -18,8 +19,9 @@
 const char* ssid = "12345";
 const char* password = "surya12345";
 
-// API endpoint
-const char* serverName = "https://deafening-gnu-222.convex.site/insertItem";
+// API endpoints
+const char* insertServerName = "https://deafening-gnu-222.convex.site/insertItem";
+const char* updateServerName = "https://deafening-gnu-222.convex.site/updateItem";
 
 // NTP Server settings
 const char* ntpServer = "pool.ntp.org";
@@ -38,6 +40,15 @@ struct Product {
   bool isIn;
 };
 
+// Product status structure with timestamps
+struct ProductStatus {
+  String rfid;
+  bool isInitialized;
+  int currentQuantity;
+  time_t lastInTime;
+  time_t lastOutTime;
+};
+
 // Product database
 const Product products[] = {
   {"IPHONE_16_PR0_MAX", "jd7d6qtr650dwnqydav9yn7khn742c2y", 5, 144900, "D3 CF 2D DA", true},
@@ -48,8 +59,176 @@ const Product products[] = {
   {"MARUTI_ALTO_K10", "jd7dhe676z0ft7dwv5z8nak69x743n20", 1, 400000, "33 20 4F E2", true}
 };
 
+// Initialize product status array
+ProductStatus productStatuses[sizeof(products) / sizeof(products[0])];
+
 bool buttonPressed = false;
 bool waitingForCard = false;
+
+// Function to get formatted RFID UID
+String getFormattedUID() {
+  String cardID = "";
+  for (byte i = 0; i < rfid.uid.size; i++) {
+    if (rfid.uid.uidByte[i] < 0x10) cardID += "0";
+    cardID += String(rfid.uid.uidByte[i], HEX);
+    if (i < rfid.uid.size - 1) cardID += " ";
+  }
+  cardID.toUpperCase();
+  return cardID;
+}
+
+// Buzzer feedback functions
+void buzzerSuccess() {
+  digitalWrite(BUZZER, HIGH);
+  delay(200);
+  digitalWrite(BUZZER, LOW);
+}
+
+void buzzerError() {
+  digitalWrite(BUZZER, HIGH);
+  delay(100);
+  digitalWrite(BUZZER, LOW);
+  delay(100);
+  digitalWrite(BUZZER, HIGH);
+  delay(100);
+  digitalWrite(BUZZER, LOW);
+}
+
+// Product status management functions
+bool isProductInitialized(const String& rfid) {
+  for (const ProductStatus& status : productStatuses) {
+    if (status.rfid == rfid) {
+      return status.isInitialized;
+    }
+  }
+  return false;
+}
+
+int getCurrentQuantity(const String& rfid) {
+  for (const ProductStatus& status : productStatuses) {
+    if (status.rfid == rfid) {
+      return status.currentQuantity;
+    }
+  }
+  return 0;
+}
+
+// Find product by RFID
+const Product* findProductByRFID(const String& rfid) {
+  for (const Product& product : products) {
+    if (String(product.rfid) == rfid) {
+      return &product;
+    }
+  }
+  return nullptr;
+}
+
+// Handle API communication
+void sendToAPI(const Product& product, bool isIn, time_t timestamp, time_t unused) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not connected!");
+    buzzerError();
+    return;
+  }
+
+  HTTPClient http;
+  String rfidStr = String(product.rfid);
+  bool productExists = isProductInitialized(rfidStr);
+  int currentQty = getCurrentQuantity(rfidStr);
+  
+  // Get previous timestamps
+  time_t previousInTime = 0;
+  time_t previousOutTime = 0;
+  for (const ProductStatus& status : productStatuses) {
+    if (status.rfid == rfidStr) {
+      previousInTime = status.lastInTime;
+      previousOutTime = status.lastOutTime;
+      break;
+    }
+  }
+  
+  // Error handling for invalid operations
+  if (!isIn && !productExists) {
+    Serial.println("Error: Cannot check out product that was never checked in!");
+    buzzerError();
+    return;
+  }
+  
+  if (!isIn && currentQty <= 0) {
+    Serial.println("Error: Cannot check out product - quantity is zero!");
+    buzzerError();
+    return;
+  }
+
+  String jsonPayload;
+  const char* endpoint;
+  
+  if (!productExists && isIn) {
+    // First time insertion
+    endpoint = insertServerName;
+    jsonPayload = "{\"name\":\"" + String(product.name) + 
+                  "\",\"categoryId\":\"" + String(product.categoryId) + 
+                  "\",\"quantity\":" + String(product.quantity) + 
+                  ",\"price\":" + String(product.price) + 
+                  ",\"rfid\":\"" + rfidStr + 
+                  "\",\"intime\":" + String(timestamp) + 
+                  ",\"outtime\":0" + 
+                  ",\"isIn\":true}";
+  } else {
+    // Update existing product
+    endpoint = updateServerName;
+    int newQuantity = isIn ? currentQty + 1 : currentQty - 1;
+    
+    jsonPayload = "{\"name\":\"" + String(product.name) + 
+                  "\",\"categoryId\":\"" + String(product.categoryId) + 
+                  "\",\"price\":" + String(product.price) + 
+                  ",\"rfid\":\"" + rfidStr + 
+                  "\",\"quantity\":" + String(newQuantity);
+
+    if (isIn) {
+        jsonPayload += String(",\"intime\":") + String(timestamp) + 
+                      String(",\"outtime\":") + String(previousOutTime);
+    } else {
+        jsonPayload += String(",\"intime\":") + String(previousInTime) + 
+                      String(",\"outtime\":") + String(timestamp);
+    }
+
+    jsonPayload += String(",\"isIn\":") + (isIn ? "true" : "false") + "}";
+  }
+  
+  Serial.println("Sending " + String(productExists ? "PUT" : "POST") + " request with payload: " + jsonPayload);
+  
+  http.begin(endpoint);
+  http.addHeader("Content-Type", "application/json");
+  int httpResponseCode = productExists ? http.PUT(jsonPayload) : http.POST(jsonPayload);
+  
+  if (httpResponseCode > 0) {
+    String response = http.getString();
+    Serial.println("Response code: " + String(httpResponseCode));
+    Serial.println("Response: " + response);
+    
+    // Update product status including timestamps
+    for (ProductStatus& status : productStatuses) {
+      if (status.rfid == rfidStr) {
+        status.isInitialized = true;
+        status.currentQuantity = isIn ? (productExists ? currentQty + 1 : product.quantity) : currentQty - 1;
+        if (isIn) {
+          status.lastInTime = timestamp;
+        } else {
+          status.lastOutTime = timestamp;
+        }
+        break;
+      }
+    }
+    
+    buzzerSuccess();
+  } else {
+    Serial.println("Error on sending " + String(productExists ? "PUT" : "POST") + " Request");
+    buzzerError();
+  }
+  
+  http.end();
+}
 
 void setup() {
   Serial.begin(115200);
@@ -63,8 +242,18 @@ void setup() {
   SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, SS_PIN);
   rfid.PCD_Init();
 
-  // Set up Wi-Fi
+  // Initialize product statuses with timestamps
+  for (size_t i = 0; i < sizeof(products) / sizeof(products[0]); i++) {
+    productStatuses[i].rfid = String(products[i].rfid);
+    productStatuses[i].isInitialized = false;
+    productStatuses[i].currentQuantity = 0;
+    productStatuses[i].lastInTime = 0;
+    productStatuses[i].lastOutTime = 0;
+  }
+
+  // Connect to WiFi
   WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
@@ -73,50 +262,8 @@ void setup() {
 
   // Initialize time
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-}
-
-String getFormattedUID() {
-  String cardID = "";
-  for (byte i = 0; i < rfid.uid.size; i++) {
-    if (rfid.uid.uidByte[i] < 0x10) cardID += "0";
-    cardID += String(rfid.uid.uidByte[i], HEX);
-    if (i < rfid.uid.size - 1) cardID += " ";
-  }
-  cardID.toUpperCase();
-  return cardID;
-}
-
-void buzzerBeep() {
-  digitalWrite(BUZZER, HIGH);
-  delay(200);
-  digitalWrite(BUZZER, LOW);
-}
-
-void sendToAPI(const Product& product, bool isIn, time_t intime, time_t outtime) {
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    http.begin(serverName);
-    http.addHeader("Content-Type", "application/json");
-
-    String jsonPayload = "{\"name\":\"" + String(product.name) + 
-                        "\",\"categoryId\":\"" + String(product.categoryId) + 
-                        "\",\"quantity\":" + String(product.quantity) + 
-                        ",\"price\":" + String(product.price) + 
-                        ",\"rfid\":\"" + String(product.rfid) + 
-                        "\",\"intime\":" + String(intime) + 
-                        ",\"outtime\":" + String(outtime) + 
-                        ",\"isIn\":" + String(isIn ? "true" : "false") + "}";
-
-    int httpResponseCode = http.POST(jsonPayload);
-    
-    if (httpResponseCode > 0) {
-      String response = http.getString();
-      Serial.println("Response code: " + String(httpResponseCode));
-      Serial.println("Response: " + response);
-    }
-    
-    http.end();
-  }
+  
+  Serial.println("System ready!");
 }
 
 void loop() {
@@ -139,13 +286,12 @@ void loop() {
     time(&now);
 
     // Find matching product
-    for (const Product& product : products) {
-      if (cardID == String(product.rfid)) {
-        sendToAPI(product, digitalRead(IN_BUTTON) == LOW, now, 
-                 digitalRead(OUT_BUTTON) == LOW ? now : 0);
-        buzzerBeep();
-        break;
-      }
+    const Product* product = findProductByRFID(cardID);
+    if (product != nullptr) {
+      sendToAPI(*product, digitalRead(IN_BUTTON) == LOW, now, 0);
+    } else {
+      Serial.println("Unknown RFID card!");
+      buzzerError();
     }
 
     waitingForCard = false;
