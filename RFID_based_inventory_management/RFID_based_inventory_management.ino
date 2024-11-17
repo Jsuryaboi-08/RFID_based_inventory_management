@@ -1,81 +1,163 @@
 #include <SPI.h>
 #include <MFRC522.h>
 #include <WiFi.h>
+#include <HTTPClient.h>
+#include <time.h>
 
-#define RST_PIN1 22 // Reset pin for first RFID reader
-#define SS_PIN1 21  // SDA pin for first RFID reader
-#define RST_PIN2 19 // Reset pin for second RFID reader
-#define SS_PIN2 18  // SDA pin for second RFID reader
+// Pin definitions
+#define SS_PIN    5  
+#define RST_PIN   22
+#define SCK_PIN   18
+#define MISO_PIN  19
+#define MOSI_PIN  23
+#define IN_BUTTON 25
+#define OUT_BUTTON 26
+#define BUZZER    27
 
-MFRC522 mfrc522Intake(SS_PIN1, RST_PIN1);  // Create MFRC522 instance for intake
-MFRC522 mfrc522Takeout(SS_PIN2, RST_PIN2); // Create MFRC522 instance for takeout
+// WiFi credentials
+const char* ssid = "12345";
+const char* password = "surya12345";
 
-// Wi-Fi credentials
-const char* ssid = "your_SSID";
-const char* password = "your_PASSWORD";
+// API endpoint
+const char* serverName = "https://deafening-gnu-222.convex.site/insertItem";
 
-// Flags to activate/deactivate RFID readers
-bool intakeMode = false;
-bool takeoutMode = false;
+// NTP Server settings
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 19800;  // GMT +5:30 for IST
+const int   daylightOffset_sec = 0;
+
+MFRC522 rfid(SS_PIN, RST_PIN);
+
+// Product structure
+struct Product {
+  const char* name;
+  const char* categoryId;
+  int quantity;
+  int price;
+  const char* rfid;
+  bool isIn;
+};
+
+// Product database
+const Product products[] = {
+  {"IPHONE_16_PR0_MAX", "jd7d6qtr650dwnqydav9yn7khn742c2y", 5, 144900, "D3 CF 2D DA", true},
+  {"REALME_13_PRO", "jd7d6qtr650dwnqydav9yn7khn742c2y", 5, 26999, "13 FC E4 D9", true},
+  {"DURACELL_2A", "jd7bc9fk3craa2hb5pzvcj1ptx742pkx", 10, 20, "3D 03 34 02", true},
+  {"EVEREADY_2A", "jd7bc9fk3craa2hb5pzvcj1ptx742pkx", 10, 18, "CC 8E 31 02", true},
+  {"TATA_KUSHAQ", "jd7dhe676z0ft7dwv5z8nak69x743n20", 1, 1100000, "43 4B 44 E2", true},
+  {"MARUTI_ALTO_K10", "jd7dhe676z0ft7dwv5z8nak69x743n20", 1, 400000, "33 20 4F E2", true}
+};
+
+bool buttonPressed = false;
+bool waitingForCard = false;
 
 void setup() {
   Serial.begin(115200);
-  SPI.begin();  
-  mfrc522Intake.PCD_Init();
-  mfrc522Takeout.PCD_Init();
+  
+  // Initialize pins
+  pinMode(IN_BUTTON, INPUT_PULLUP);
+  pinMode(OUT_BUTTON, INPUT_PULLUP);
+  pinMode(BUZZER, OUTPUT);
+  
+  // Initialize RFID
+  SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, SS_PIN);
+  rfid.PCD_Init();
 
   // Connect to WiFi
   WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi...");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nConnected to WiFi!");
+  Serial.println("\nConnected to WiFi");
+
+  // Initialize time
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+}
+
+String getFormattedUID() {
+  String cardID = "";
+  for (byte i = 0; i < rfid.uid.size; i++) {
+    if (rfid.uid.uidByte[i] < 0x10) cardID += "0";
+    cardID += String(rfid.uid.uidByte[i], HEX);
+    if (i < rfid.uid.size - 1) cardID += " ";
+  }
+  cardID.toUpperCase();
+  return cardID;
+}
+
+void buzzerBeep() {
+  digitalWrite(BUZZER, HIGH);
+  delay(200);
+  digitalWrite(BUZZER, LOW);
+}
+
+void sendToAPI(const Product& product, bool isIn, time_t intime, time_t outtime) {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(serverName);
+    http.addHeader("Content-Type", "application/json");
+
+    String jsonPayload = "{\"name\":\"" + String(product.name) + 
+                        "\",\"categoryId\":\"" + String(product.categoryId) + 
+                        "\",\"quantity\":" + String(product.quantity) + 
+                        ",\"price\":" + String(product.price) + 
+                        ",\"rfid\":\"" + String(product.rfid) + 
+                        "\",\"intime\":" + String(intime) + 
+                        ",\"outtime\":" + String(outtime) + 
+                        ",\"isIn\":" + String(isIn ? "true" : "false") + "}";
+
+    int httpResponseCode = http.POST(jsonPayload);
+    
+    if (httpResponseCode > 0) {
+      String response = http.getString();
+      Serial.println("Response code: " + String(httpResponseCode));
+      Serial.println("Response: " + response);
+    }
+    
+    http.end();
+  }
 }
 
 void loop() {
-  // Check for serial input
-  if (Serial.available() > 0) {
-    String command = Serial.readStringUntil('\n');
-    command.trim();
-
-    if (command == "intake") {
-      intakeMode = true;
-      takeoutMode = false;
-      Serial.println("Intake mode activated.");
-    } 
-    else if (command == "takeout") {
-      intakeMode = false;
-      takeoutMode = true;
-      Serial.println("Takeout mode activated.");
-    }
+  // Check buttons
+  if (!buttonPressed && (digitalRead(IN_BUTTON) == LOW || digitalRead(OUT_BUTTON) == LOW)) {
+    buttonPressed = true;
+    waitingForCard = true;
+    bool isIn = (digitalRead(IN_BUTTON) == LOW);
+    Serial.println(isIn ? "IN button pressed" : "OUT button pressed");
   }
 
-  // RFID Intake Reader - Scans only once
-  if (intakeMode && mfrc522Intake.PICC_IsNewCardPresent() && mfrc522Intake.PICC_ReadCardSerial()) {
-    Serial.print("Intake RFID Tag: ");
-    for (byte i = 0; i < mfrc522Intake.uid.size; i++) {
-      Serial.print(mfrc522Intake.uid.uidByte[i] < 0x10 ? " 0" : " ");
-      Serial.print(mfrc522Intake.uid.uidByte[i], HEX);
+  // Wait for card only if button was pressed
+  if (waitingForCard && rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
+    String cardID = getFormattedUID();
+    Serial.println("Card detected: " + cardID);
+
+    // Get current time
+    struct tm timeinfo;
+    time_t now;
+    time(&now);
+
+    // Find matching product
+    for (const Product& product : products) {
+      if (cardID == String(product.rfid)) {
+        sendToAPI(product, digitalRead(IN_BUTTON) == LOW, now, 
+                 digitalRead(OUT_BUTTON) == LOW ? now : 0);
+        buzzerBeep();
+        break;
+      }
     }
-    Serial.println();
-    mfrc522Intake.PICC_HaltA();
-    intakeMode = false;  // Deactivate intake mode after a successful scan
-    Serial.println("Intake mode deactivated.");
+
+    waitingForCard = false;
+    buttonPressed = false;
+    rfid.PICC_HaltA();
+    rfid.PCD_StopCrypto1();
   }
 
-  // RFID Takeout Reader - Scans only once
-  if (takeoutMode && mfrc522Takeout.PICC_IsNewCardPresent() && mfrc522Takeout.PICC_ReadCardSerial()) {
-    Serial.print("Takeout RFID Tag: ");
-    for (byte i = 0; i < mfrc522Takeout.uid.size; i++) {
-      Serial.print(mfrc522Takeout.uid.uidByte[i] < 0x10 ? " 0" : " ");
-      Serial.print(mfrc522Takeout.uid.uidByte[i], HEX);
-    }
-    Serial.println();
-    mfrc522Takeout.PICC_HaltA();
-    takeoutMode = false;  // Deactivate takeout mode after a successful scan
-    Serial.println("Takeout mode deactivated.");
+  // Reset button state if released
+  if (buttonPressed && digitalRead(IN_BUTTON) == HIGH && digitalRead(OUT_BUTTON) == HIGH) {
+    buttonPressed = false;
   }
-  
+
+  delay(100);
 }
